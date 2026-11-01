@@ -35,6 +35,7 @@ const RESTORE_DELAY_MS = 1500
 // savvy-progress's ✕ Button key: the fingerprint of its own row in the band.
 const SP_DISMISS_KEY = 'savvy-dismiss'
 const CLOSE_KEY = 'savvy-teams-close'
+const AGENTS_KEY = 'savvy-teams-agents'
 
 const LEAD_RULE = `# Progress bar (Savvy Progress mod)
 This section is for the main session (the lead) only; a subagent ignores it. Our agents are not named \`savvy-*\`, so the bar above the chat box shows only if the lead reports progress.
@@ -310,7 +311,9 @@ const PHASE_WORD: Record<string, string> = { plan: 'plan', design: 'design', del
 const PHASE_COLOR: Record<string, string> = { delegate: 'suggestion', review: 'warning' }
 const BAR_W = 6
 
-const width = (s: string): number => [...s].length
+// 0.5.3 (review F11): terminal cells, with East Asian wide characters and emoji as two.
+const WIDE = /[ᄀ-ᅟ⺀-〾ぁ-㏿㐀-䶿一-鿿ꀀ-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]|\p{Extended_Pictographic}/u
+const width = (s: string): number => [...s].reduce((w, c) => w + (WIDE.test(c) ? 2 : 1), 0)
 const fit = (s: string, w: number): string => {
   const cs = [...s]
   if (w <= 0) return ''
@@ -564,8 +567,9 @@ export const lanesTree = (
   flow: SpFlow,
   rows: Row[],
   o: { maxLines: number; elapsedMs: number; unplanned: number; cols: number },
-  close: unknown,
+  controls: unknown,
 ): unknown => {
+  const buttons = (Array.isArray(controls) ? controls : [controls]).filter(c => c !== null && c !== undefined)
   const { Box, Text, Svg } = el
   const budget = Math.max(1, Math.min(6, Math.floor(o.maxLines)))
   const accepted = rows.filter(r => r.state === 'done').length
@@ -586,7 +590,7 @@ export const lanesTree = (
       T(flow.isFinished ? `All ${rows.length} accepted` : `${accepted} of ${rows.length} accepted`, { dimColor: true }),
       icon('clock', 'elapsed', undefined, 13),
       T(fmtTime(o.elapsedMs), { bold: true }),
-      close,
+      ...buttons,
     ],
   })
 
@@ -751,6 +755,15 @@ const restore = async ($: EngineInterface, force: boolean): Promise<string> => {
 }
 
 /** The checklist's ✕: asks savvy-progress for a write and turns it into null, exactly as its own ✕ does. */
+// The band's Agents button: savvy-progress's panel of runs, models, context and cost.
+const openAgents = async ($: EngineInterface): Promise<void> => {
+  try {
+    await $.command.run({ command: 'agents-info', args: 'open' })
+  } catch {
+    // savvy-progress missing: /agents-info is not there to open.
+  }
+}
+
 const closeBar = async ($: EngineInterface): Promise<void> => {
   isClosing = true
   try {
@@ -858,7 +871,7 @@ export const register: Register = (on, options) => {
       // A store that cannot be read is no reason to stop the session.
     }
     // A restarted, resumed session gets its bar back once savvy-progress has registered its tools.
-    $.clock.after(RESTORE_DELAY_MS, () => void restore($, false))
+    $.clock.after(RESTORE_DELAY_MS, () => void restore($, false).catch(() => undefined))
     // The job clock moves while the checklist shows and no agent runs (savvy-progress ticks its own `now` while one does).
     if (isBandOn) {
       let lastTick = 0
@@ -883,7 +896,7 @@ export const register: Register = (on, options) => {
   // /resume and /branch reset $.state and skip session.start: bring this session's bar back.
   on('classic.SessionStart', { source: ['resume', 'fork'] }, async ($, e, next) => {
     const r = await next(e)
-    $.clock.after(RESTORE_DELAY_MS, () => void restore($, false))
+    $.clock.after(RESTORE_DELAY_MS, () => void restore($, false).catch(() => undefined))
     return r
   })
 
@@ -993,7 +1006,7 @@ export const register: Register = (on, options) => {
     const task: Task = { title, tier: tierOf(e.subagentType, started.model) }
     const team = teamOf(e.subagentType, teams)
     // Wait a moment: a lead that plans in the same message gets its bar in first.
-    $.clock.after(AUTO_DELAY_MS, () => void serial(() => track($, agentId, task, team)))
+    $.clock.after(AUTO_DELAY_MS, () => void serial(() => track($, agentId, task, team)).catch(() => undefined))
     return started
   })
 
@@ -1091,12 +1104,14 @@ export const register: Register = (on, options) => {
     try {
       const flow = flowValue as unknown as SpFlow
       const runs = agentsValue as unknown as SpRun[]
+      // 0.5.3 (review F5): the run clocks are read together, not one await per run.
       const clocks: Record<string, RunClock> = {}
-      for (const a of runs) {
-        if (!a.agentId) continue
-        const c = (await $.state.get({ ...CLOCK, id: a.agentId }))?.value
-        if (c) clocks[a.agentId] = c
-      }
+      const ids = runs.flatMap(a => (a.agentId ? [a.agentId] : []))
+      const read = await Promise.all(ids.map(id => $.state.get({ ...CLOCK, id })))
+      ids.forEach((id, i) => {
+        const c = read[i]?.value
+        if (c) clocks[id] = c
+      })
       // Reading these subscribes the band: savvy-progress ticks `now` each second while an agent runs, this plugin `tick` otherwise.
       const spNow = Number((await $.state.get(SP_NOW))?.value ?? 0)
       const tick = Number((await $.state.get(TICK))?.value ?? 0)
@@ -1106,7 +1121,8 @@ export const register: Register = (on, options) => {
       const firstStart = runs.length ? Math.min(...runs.map(a => a.startedAt)) : now
       const jobStart = job && job.title === flow.title ? job.startedAt : firstStart
       const jobEnd = job && job.title === flow.title && job.endedAt !== undefined ? job.endedAt : now
-      const cols = Math.max(24, (e.props.bodyColumns || 80) - 4)
+      // 0.5.3 (review F10): room for the ✕ and agents buttons, so the header never cuts the time.
+      const cols = Math.max(24, (e.props.bodyColumns || 80) - 6)
       const band = layoutBand(flow, rows, {
         cols,
         maxLines: Math.min(6, (e.props.maxRows || 8) - 1),
@@ -1126,6 +1142,8 @@ export const register: Register = (on, options) => {
           ),
         })
       const close = Button({ key: CLOSE_KEY, label: '✕', plain: true, role: 'dismiss', onPress: () => void closeBar($) })
+      // 0.5.3 (review F9): the agents panel, reachable from the band again (savvy-progress's ×N button).
+      const agents = Button({ key: AGENTS_KEY, label: 'Agents', plain: true, onPress: () => void openAgents($) })
       const Svg = (ui as unknown as { Svg?: (p: { source: string; alt: string; width?: number; height?: number }) => unknown }).Svg
       const ours = e.surface !== 'terminal' && Svg
         ? lanesTree({ Box, Text, Svg }, flow, rows, {
@@ -1133,10 +1151,10 @@ export const register: Register = (on, options) => {
             elapsedMs: Math.max(0, jobEnd - jobStart),
             unplanned: unplannedRunning(flow, runs, clocks),
             cols,
-          }, close)
+          }, [agents, close])
         : Box({
             flexDirection: 'column',
-            children: [Box({ flexDirection: 'row', gap: 1, children: [Box({ flexGrow: 1, children: [text(band.header)] }), close] }), ...band.lines.map(text)],
+            children: [Box({ flexDirection: 'row', gap: 1, children: [Box({ flexGrow: 1, children: [text(band.header)] }), agents, close] }), ...band.lines.map(text)],
           })
       seen = { at, band: 'checklist', reason: 'all checks passed', beneath, isOutside }
       return split.below ? Box({ flexDirection: 'column', children: [ours, split.below as never] }) : ours

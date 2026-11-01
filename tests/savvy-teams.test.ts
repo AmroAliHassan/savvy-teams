@@ -52,18 +52,30 @@ test('an agent the noStepAgents setting names gets no step rule', { options: { n
   expect(prompts[0]).toBe('Read the room.')
 })
 
+// 0.5.3 (review F7): the two stubs are real tests now.
 test('a run left out of the lead plan does not change the total', async ($, on) => {
+  const clock = mock.clock(on, { now: AT })
   const reports: Array<Record<string, unknown>> = []
   on('tool.call', { tool: 'mcp__savvy-progress__progress' }, (_$, e) => { reports.push(e as unknown as Record<string, unknown>); return { result: 'ok' } })
-  // ...seed savvy-progress flow { title: 'Job', total: 2, tasks: [A, B] }, spawn 'Ad-hoc check',
-  // advance the clock 5 s, then:
+  // The lead's own bar is live, with its two planned tasks.
+  on('state.get', (_$, e) => {
+    if (`${e.plugin}.${e.key}` === 'savvy-progress.flow') return { value: { value: job({ title: 'Job', total: 2, tasks: [{ title: 'A', tier: 'medium' }, { title: 'B', tier: 'medium' }] }), version: 1 } }
+    return { value: { value: undefined, version: 0 } }
+  })
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'adhoc-1' }))
+  await $.agent.spawn({ prompt: 'Look it up.', description: 'Ad-hoc check', subagentType: 'Explore' })
+  await clock.advance(5000)
   expect(reports.filter(r => Array.isArray(r.tasks))).toHaveLength(0)
+  expect(reports.filter(r => r.total !== undefined)).toHaveLength(0)
 })
 
-test('the tool.call hook sits outside savvy-progress', async () => {
-  // Load both plugins; after a simulated state reset, send { done: 3 } and expect
-  // savvy-progress to receive the saved title. If not, the resume restore still works
-  // (it re-sends the title itself) and only the done-only rehydrate is lost.
+test('the Lanes header carries the agents panel button and the ✕, in that order', async () => {
+  const agents = { type: 'Button', props: { key: 'savvy-teams-agents' }, children: [] }
+  const close = { type: 'Button', props: { key: 'savvy-teams-close' }, children: [] }
+  const tree = lanesTree(els, job(), deriveRows(job(), runs, {}, AT), { maxLines: 6, elapsedMs: 0, unplanned: 0, cols: 90 }, [agents, close])
+  const header = (tree as Node).children[0] as Node
+  const keys = header.children.flatMap(c => ((c as Node)?.type === 'Button' ? [String((c as Node).props.key)] : []))
+  expect(keys).toEqual(['savvy-teams-agents', 'savvy-teams-close'])
 })
 
 test('every session gets the lead rule as the last section', async ($, on) => {
