@@ -1,0 +1,5 @@
+{
+  "name": "savvy-teams",
+  "owner": { "name": "AmroAliHassan" },
+  "plugins": [{ "name": "savvy-teams", "source": "./" }]
+}
