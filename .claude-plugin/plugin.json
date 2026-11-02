@@ -1,6 +1,6 @@
 {
   "name": "savvy-teams",
-  "version": "0.5.3",
+  "version": "0.8.1",
   "description": "Companion to savvy-progress: the 'Lanes' task band above the prompt (one lane per task: state icon, agent, slim progress bar, active time; vector icons in an ocean palette on the desktop, theme-coloured text in the terminal), drawn only when a run-time guard confirms it can replace savvy-progress's row. Plus the lead and step rules (skipped for agents that carry their own or cannot call the step tool), a saved per-session bar that survives /resume, and auto-tracking when the lead forgets.",
   "author": {
     "name": "MENT design"
@@ -45,6 +45,12 @@
       "title": "Team names",
       "description": "Titles for auto-tracked bars, as regex=Name pairs split by ';' (for example ^yt-=Videos;^qa-=Checks). Empty: every bar is titled Agents.",
       "default": ""
+    },
+    "colourCards": {
+      "type": "boolean",
+      "title": "Colour Lane cards",
+      "description": "Draw the band as colour Lane cards and the Agents panel in black and white (off = plain Lanes and savvy-progress's own panel)",
+      "default": true
     }
   }
 }

@@ -1,5 +1,9 @@
 import type { Register, EngineInterface } from 'claude-code'
 import type { AutoFlow, JobClock, RunClock, SavedBar, SavedFlow, SpFlow, SpRun } from '../types'
+import { toneOf, paneHeader, agentCard, plannedCard, acceptedCard, fmtCost, fmtTokens, AGENT_H, PLANNED_H } from './cards'
+import type { Tone } from './cards'
+import { THEME, ROW_H, drawingWidth, headerSvg, cardSvg, cardHeight, fmtMin, remembered } from './routeA'
+import type { AJob, ATask, AState } from './routeA'
 
 // Companion to savvy-progress. That mod draws the bar only when the lead calls
 // its `progress` tool or a `savvy-*` agent starts, and keeps it in session
@@ -36,6 +40,10 @@ const RESTORE_DELAY_MS = 1500
 const SP_DISMISS_KEY = 'savvy-dismiss'
 const CLOSE_KEY = 'savvy-teams-close'
 const AGENTS_KEY = 'savvy-teams-agents'
+// savvy-progress's Agents panel, and whether its finished list is open in our drawing of it.
+const SP_PANE = 'savvy-agents'
+const PANE_DONE = { plugin: 'savvy-teams', key: 'paneDone' } as const
+const DONE_KEY = 'savvy-teams-pane-done'
 
 const LEAD_RULE = `# Progress bar (Savvy Progress mod)
 This section is for the main session (the lead) only; a subagent ignores it. Our agents are not named \`savvy-*\`, so the bar above the chat box shows only if the lead reports progress.
@@ -174,6 +182,15 @@ export const agentsShapeProblem = (v: unknown): string => {
 type Dict = { type?: unknown; props?: Record<string, unknown>; children?: unknown[]; part?: { plugin?: unknown } }
 const isSp = (name: unknown): boolean => isStr(name) && /^savvy-progress(@|$)/.test(name)
 
+// 0.5.5: bands that belong above the checklist (night-shift's day/night strip), by their Box key.
+const TOP_KEYS = new Set(['night-shift-strip'])
+export const hasTopBand = (n: unknown, depth = 0): boolean => {
+  if (depth > 4 || !n || typeof n !== 'object') return false
+  const d = n as Dict
+  if (d.type === 'Box' && TOP_KEYS.has(String(d.props?.key ?? ''))) return true
+  return Array.isArray(d.children) && d.children.some(c => hasTopBand(c, depth + 1))
+}
+
 const hasButton = (n: unknown, key: string, depth = 0): boolean => {
   if (depth > 6 || !n || typeof n !== 'object') return false
   const d = n as Dict
@@ -182,6 +199,34 @@ const hasButton = (n: unknown, key: string, depth = 0): boolean => {
 }
 
 export type Split = { ok: true; below: unknown | null } | { ok: false; reason: string }
+
+/**
+ * 0.5.4: a mod drawn between this one and savvy-progress (night-shift's strip)
+ * may wrap savvy-progress's band in a column of its own. Finds the band up to
+ * three levels down, so the checklist takes its place and that mod's rows stay
+ * where they are. `path` is the child index at each level.
+ */
+export const findSpBand = (drawn: unknown, depth = 0): { split: { ok: true; below: unknown | null }; path: number[] } | null => {
+  const direct = splitSpBand(drawn)
+  if (direct.ok) return { split: direct, path: [] }
+  if (depth >= 3 || !drawn || typeof drawn !== 'object') return null
+  const kids = (drawn as Dict).children
+  if (!Array.isArray(kids)) return null
+  for (let i = 0; i < kids.length; i++) {
+    const found = findSpBand(kids[i], depth + 1)
+    if (found) return { split: found.split, path: [i, ...found.path] }
+  }
+  return null
+}
+
+/** A copy of `tree` with the node at `path` swapped for `node`; the rest is left as it was drawn. */
+export const replaceAt = (tree: unknown, path: number[], node: unknown): unknown => {
+  if (!path.length) return node
+  const t = tree as Dict
+  const kids = [...(t.children ?? [])]
+  kids[path[0]] = replaceAt(kids[path[0]], path.slice(1), node)
+  return { ...t, children: kids }
+}
 
 /**
  * savvy-progress 1.2.1 answers the band with a column Box: its own row (holding
@@ -384,110 +429,6 @@ export const pickItems = (rows: Row[], budget: number, unplanned: number): Item[
   return items
 }
 
-// ART-BEGIN ------------------------------------------------------------------
-// 0.5.0 "Lanes": on the desktop, mobile and editor surfaces the icons and bars
-// are small vector drawings in an ocean palette; the words stay native Text, so
-// they follow the person's theme and font. Mid-tones are chosen to read on both
-// dark and light grounds. The designs page renders this same section.
-
-export const OCEAN = {
-  done: '#0A9396',     // teal: accepted
-  run: '#0096C7',      // ocean blue: running
-  review: '#EE9B00',   // amber: ready for review
-  fail: '#E63946',     // coral red: failed or blocked
-  track: '#8FA3B0',    // slate: still to come, empty track
-}
-export const SVG_FONT = "'Segoe UI Variable Text','Segoe UI',system-ui,-apple-system,sans-serif"
-
-const svgDoc = (w: number, h: number, inner: string): string =>
-  `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">${inner}</svg>`
-
-const tickMark = (c: string): string =>
-  `<circle cx="8" cy="8" r="7" fill="${c}"/><path d="M4.9 8.3l2.1 2.1 4.2-4.6" fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>`
-
-/** A 16 px state icon. `frac` (0-1) fills the running ring. */
-export const iconSvg = (state: RowState | 'job' | 'clock' | 'accepted', frac = 0.25): string => {
-  const P = OCEAN
-  switch (state) {
-    case 'done':
-    case 'accepted':
-      return svgDoc(16, 16, tickMark(P.done))
-    case 'running': {
-      const c = 2 * Math.PI * 6
-      const f = Math.max(0.08, Math.min(1, frac))
-      return svgDoc(16, 16,
-        `<circle cx="8" cy="8" r="6" fill="none" stroke="${P.track}" stroke-opacity=".35" stroke-width="2"/>` +
-        `<circle cx="8" cy="8" r="6" fill="none" stroke="${P.run}" stroke-width="2" stroke-linecap="round" stroke-dasharray="${(c * f).toFixed(2)} ${c.toFixed(2)}" transform="rotate(-90 8 8)"/>` +
-        `<circle cx="8" cy="8" r="1.7" fill="${P.run}"/>`)
-    }
-    case 'review':
-      return svgDoc(16, 16,
-        `<path d="M1.7 8c1.6-2.9 3.7-4.4 6.3-4.4s4.7 1.5 6.3 4.4c-1.6 2.9-3.7 4.4-6.3 4.4S3.3 10.9 1.7 8z" fill="none" stroke="${P.review}" stroke-width="1.5" stroke-linejoin="round"/>` +
-        `<circle cx="8" cy="8" r="2.1" fill="${P.review}"/>`)
-    case 'failed':
-      return svgDoc(16, 16,
-        `<circle cx="8" cy="8" r="7" fill="${P.fail}"/><path d="M5.6 5.6l4.8 4.8M10.4 5.6l-4.8 4.8" stroke="#fff" stroke-width="1.7" stroke-linecap="round"/>`)
-    case 'blocked':
-      return svgDoc(16, 16,
-        `<circle cx="8" cy="8" r="6.2" fill="none" stroke="${P.fail}" stroke-width="1.5"/><path d="M3.8 12.2l8.4-8.4" stroke="${P.fail}" stroke-width="1.5" stroke-linecap="round"/>`)
-    case 'skipped':
-      return svgDoc(16, 16,
-        `<circle cx="8" cy="8" r="6.2" fill="none" stroke="${P.track}" stroke-width="1.4"/><path d="M5.2 8h5.6" stroke="${P.track}" stroke-width="1.4" stroke-linecap="round"/>`)
-    case 'job':
-      return svgDoc(16, 16,
-        `<rect x="1.5" y="2.5" width="13" height="2.4" rx="1.2" fill="${P.done}"/>` +
-        `<rect x="1.5" y="6.8" width="9" height="2.4" rx="1.2" fill="${P.run}"/>` +
-        `<rect x="1.5" y="11.1" width="5" height="2.4" rx="1.2" fill="${P.review}"/>`)
-    case 'clock':
-      return svgDoc(16, 16,
-        `<circle cx="8" cy="8" r="6.2" fill="none" stroke="${P.track}" stroke-width="1.4"/><path d="M8 4.8V8l2.3 1.5" fill="none" stroke="${P.track}" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>`)
-    default: // next, waiting
-      return svgDoc(16, 16,
-        `<circle cx="8" cy="8" r="6.2" fill="none" stroke="${P.track}" stroke-width="1.4" stroke-dasharray="2.3 2.2"/>`)
-  }
-}
-
-/** A slim rounded progress bar, `w` by 6 px. */
-export const barSvg = (frac: number, color: string, w = 112): string => {
-  const f = Math.max(0, Math.min(1, frac))
-  return svgDoc(w, 6,
-    `<rect x="0" y="0" width="${w}" height="6" rx="3" fill="${OCEAN.track}" fill-opacity=".28"/>` +
-    (f > 0 ? `<rect x="0" y="0" width="${Math.max(6, w * f).toFixed(1)}" height="6" rx="3" fill="${color}"/>` : ''))
-}
-
-/** A soft rounded pill with a word in it: the job's phase. */
-export const pillSvg = (word: string, color: string): string => {
-  const w = Math.round(word.length * 6.6 + 18)
-  return svgDoc(w, 18,
-    `<rect x="0" y="0" width="${w}" height="18" rx="9" fill="${color}" fill-opacity=".16"/>` +
-    `<text x="${w / 2}" y="12.6" text-anchor="middle" font-family="${SVG_FONT}" font-size="11" font-weight="600" fill="${color}">${word.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</text>`)
-}
-// ART-END --------------------------------------------------------------------
-
-/** The status word or bar of one lane, by state. */
-const laneStatus = (r: Row): { bar?: { frac: number; color: string }; word?: string; color?: string; dim?: boolean; steps?: string } => {
-  switch (r.state) {
-    case 'running':
-      return r.stepTotal
-        ? { bar: { frac: (r.stepDone ?? 0) / r.stepTotal, color: OCEAN.run }, steps: `${r.stepDone ?? 0}/${r.stepTotal}` }
-        : { bar: { frac: 0.08, color: OCEAN.run }, steps: '' }
-    case 'review':
-      return { bar: { frac: 1, color: OCEAN.review }, word: 'Review', color: OCEAN.review }
-    case 'done':
-      return { bar: { frac: 1, color: OCEAN.done }, word: 'Done', color: OCEAN.done }
-    case 'failed':
-      return { word: 'Failed', color: OCEAN.fail }
-    case 'blocked':
-      return { word: `Blocked by ${r.waitsOn.join(', ')}`, color: OCEAN.fail }
-    case 'waiting':
-      return { word: `after ${r.waitsOn.join(', ')}`, dim: true }
-    case 'skipped':
-      return { word: 'not run', dim: true }
-    default:
-      return { word: 'next', dim: true }
-  }
-}
-
 /**
  * Lays out the checklist in `cols` cells and at most `maxLines` lines below the
  * header (6 at most). Past 6 tasks the done rows fold into one line; if the rest
@@ -554,92 +495,139 @@ export const layoutBand = (flow: SpFlow, rows: Row[], o: { cols: number; maxLine
   return { header, lines }
 }
 
-type Els = { Box: (p: Record<string, unknown>) => unknown; Text: (p: Record<string, unknown>) => unknown; Svg: (p: { source: string; alt: string; width?: number; height?: number }) => unknown }
+type Els = { Box: (p: Record<string, unknown>) => unknown; Text: (p: Record<string, unknown>) => unknown; Svg: (p: { source: string; alt: string; width?: number; height?: number; isInteractive?: boolean }) => unknown }
 
 /**
- * The 0.5.0 "Lanes" band for graphical surfaces: a header (job mark, title,
- * phase pill; accepted count, clock, ✕) and one lane per task: state icon,
- * task, agent, slim bar or status word, steps and active time. Rows are picked
- * as in the text band (done rows fold past 6 tasks; never more than 6 lines).
+ * 0.8.0, Route A "One surface": the job header (a drawing) with [Agents] [✕]
+ * beside it as the app's own secondary buttons, then the list card (one
+ * drawing: accepted fold, up to four live rows, "+N more"). No loose text.
  */
-export const lanesTree = (
+export const routeATree = (
   el: Els,
   flow: SpFlow,
   rows: Row[],
-  o: { maxLines: number; elapsedMs: number; unplanned: number; cols: number },
-  controls: unknown,
+  o: { maxLines: number; elapsedMs: number; unplanned: number; cols: number; bodyCols?: number },
+  agentsBtn: unknown,
+  closeBtn: unknown,
+  isLight: boolean,
 ): unknown => {
-  const buttons = (Array.isArray(controls) ? controls : [controls]).filter(c => c !== null && c !== undefined)
-  const { Box, Text, Svg } = el
-  const budget = Math.max(1, Math.min(6, Math.floor(o.maxLines)))
+  const { Box, Svg } = el
+  const C = THEME[isLight ? 'light' : 'dark']
+  const cw = Math.max(320, (o.bodyCols ?? o.cols + 6) * 8)
+  const toA = (s: RowState): AState => (s === 'running' ? 'run' : s === 'review' ? 'rev' : s === 'done' ? 'acc' : s === 'failed' || s === 'blocked' ? 'fail' : 'wait')
   const accepted = rows.filter(r => r.state === 'done').length
-  const icon = (state: Parameters<typeof iconSvg>[0], alt: string, frac?: number, size = 16) =>
-    Box({ width: 2, flexShrink: 0, alignItems: 'center', children: [Svg({ source: iconSvg(state, frac), alt, width: size, height: size })] })
-  const T = (text: string, p: Record<string, unknown> = {}) => Text({ wrap: 'truncate-end', ...p, children: [text] })
-
-  const phaseWord = flow.isFinished ? 'Done' : ({ plan: 'Planning', design: 'Design', delegate: 'Working', review: 'Review', close: 'Closing' } as Record<string, string>)[flow.phase] ?? flow.phase
-  const phaseColor = flow.isFinished ? OCEAN.done : flow.phase === 'review' ? OCEAN.review : OCEAN.run
+  const isDone = flow.isFinished || (rows.length > 0 && accepted === rows.length)
+  const phase = isDone ? 'Done' : ({ plan: 'Planning', design: 'Design', delegate: 'Working', review: 'Review', close: 'Closing' } as Record<string, string>)[flow.phase] ?? 'Working'
+  const order: AState[] = ['acc', 'rev', 'run', 'fail', 'wait']
+  const cells = rows.map(r => toA(r.state)).sort((a, b) => order.indexOf(a) - order.indexOf(b))
+  const job: AJob = { title: flow.title, phase, accepted, total: rows.length, elapsed: isDone ? 'done' : fmtMin(o.elapsedMs), cells }
+  // Space between rows lives in small empty drawings, so it is exact: 8 px above the header, 6 above the card.
+  const air = (h: number) => Svg({ source: `<svg xmlns="http://www.w3.org/2000/svg" width="${cw}" height="${h}" viewBox="0 0 ${cw} ${h}"></svg>`, alt: 'space', width: cw, height: h })
+  const hw = drawingWidth(cw, ['Agents', '✕'])
   const header = Box({
-    flexDirection: 'row', gap: 1, alignItems: 'center',
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     children: [
-      icon('job', 'job'),
-      Box({ flexShrink: 1, children: [T(flow.title, { bold: true })] }),
-      Svg({ source: pillSvg(phaseWord, phaseColor), alt: phaseWord, height: 18 }),
-      Box({ flexGrow: 1 }),
-      icon('accepted', 'accepted', undefined, 13),
-      T(flow.isFinished ? `All ${rows.length} accepted` : `${accepted} of ${rows.length} accepted`, { dimColor: true }),
-      icon('clock', 'elapsed', undefined, 13),
-      T(fmtTime(o.elapsedMs), { bold: true }),
-      ...buttons,
+      Box({ flexShrink: 0, width: Math.ceil(hw / 8), children: [Svg({ source: remembered('header', JSON.stringify([hw, job, isLight]), () => headerSvg(hw, job, C)), alt: `${flow.title}: ${phase}, ${accepted} of ${rows.length} accepted, ${job.elapsed}`, width: hw, height: ROW_H, ...(isDone ? {} : { isInteractive: true }) })] }),
+      Box({ flexDirection: 'row', alignItems: 'center', gap: 1, flexShrink: 0, children: [agentsBtn, closeBtn] }),
     ],
   })
-
-  // Finished: one calm line under the header.
-  if (flow.isFinished) {
-    const last = [...rows].reverse().find(r => r.state === 'done')
-    return Box({ flexDirection: 'column', children: [header, Box({ flexDirection: 'row', gap: 1, alignItems: 'center', children: [
-      icon('done', 'done'), T(`All ${rows.length} tasks accepted`, { bold: true }),
-      T(last ? `Last: ${last.title}${last.isAgentKnown ? ` by ${last.agent}` : ''}.` : '', { dimColor: true }),
-    ] })] })
+  const rank = (s: RowState): number => (s === 'failed' || s === 'blocked' ? 0 : s === 'review' ? 1 : s === 'running' ? 2 : 3)
+  const live = isDone ? [] : rows.filter(r => r.state !== 'done' && r.state !== 'skipped').sort((a, b) => rank(a.state) - rank(b.state) || a.n - b.n)
+  const room = o.maxLines >= 5 ? 4 : 3
+  const shown = live.slice(0, room)
+  const hidden = live.slice(room)
+  const tasks: ATask[] = shown.map(r => ({
+    title: r.title,
+    agent: r.agent,
+    s: toA(r.state),
+    // A task in review with no steps reported shows a full bar in the review colour.
+    done: r.state === 'review' && !r.stepTotal ? 1 : r.stepDone ?? 0,
+    total: r.state === 'review' && !r.stepTotal ? 1 : r.stepTotal ?? 0,
+    minutes: r.ms === null ? '' : fmtMin(r.ms),
+    ...(r.state === 'waiting' || r.state === 'next' ? { note: 'waiting' } : r.state === 'blocked' ? { note: 'blocked' } : {}),
+  }))
+  const more = hidden.length
+    ? { n: hidden.length, note: `${hidden.every(r => r.state === 'running') ? 'running' : 'waiting'} · ${hidden.map(r => r.title).join(', ')}` }
+    : null
+  const names = rows.filter(r => r.state === 'done').map(r => r.title)
+  const card = {
+    svg: remembered('card', JSON.stringify([cw, accepted, names, tasks, more, isLight]), () => cardSvg(cw, accepted, names, tasks, more, C).svg),
+    h: cardHeight(tasks.length, !!more, accepted > 0),
   }
-
-  const items = pickItems(rows, budget, o.unplanned)
-  const shown = items.flatMap(it => (it.kind === 'row' ? [it.r] : []))
-  const taskW = Math.max(10, Math.min(28, Math.floor(o.cols * 0.3), ...shown.map(r => width(r.title) + 1)))
-  const agentW = o.cols >= 60 ? Math.min(18, Math.max(8, ...shown.map(r => width(r.agent) + 1))) : 0
-  const barCells = o.cols >= 70 ? 16 : 10
-
-  const lanes = items.map(it => {
-    if (it.kind === 'fold') {
-      return Box({ flexDirection: 'row', gap: 1, alignItems: 'center', children: [
-        icon('done', 'accepted'), T(`${it.rs.length} accepted`, { bold: true, color: OCEAN.done }),
-        Box({ flexShrink: 1, children: [T(it.rs.map(r => r.title).join(', '), { dimColor: true })] }),
-      ] })
-    }
-    if (it.kind === 'more') return Box({ flexDirection: 'row', gap: 1, children: [icon('next', 'more'), T(`+${it.n} more · /agents-info lists all`, { dimColor: true })] })
-    if (it.kind === 'unplanned') return Box({ flexDirection: 'row', gap: 1, children: [icon('running', 'unplanned'), T(`+${it.n} unplanned run${it.n === 1 ? '' : 's'} running`, { dimColor: true })] })
-    const r = it.r
-    const quiet = r.state === 'next' || r.state === 'waiting' || r.state === 'skipped'
-    const live = r.state === 'running' || r.state === 'review'
-    const st = laneStatus(r)
-    const frac = r.stepTotal ? (r.stepDone ?? 0) / r.stepTotal : 0.25
-    return Box({
-      flexDirection: 'row', gap: 1, alignItems: 'center',
-      children: [
-        icon(r.state, r.state, frac),
-        Box({ width: taskW, flexShrink: 1, children: [T(r.title, { bold: live, dimColor: quiet })] }),
-        ...(agentW ? [Box({ width: agentW, flexShrink: 1, children: [T(r.agent, { dimColor: true })] })] : []),
-        Box({ flexGrow: 1 }),
-        Box({ width: barCells, flexShrink: 0, alignItems: 'center', children: [
-          st.bar ? Svg({ source: barSvg(st.bar.frac, st.bar.color, barCells * 7), alt: `${Math.round(st.bar.frac * 100)} percent`, width: barCells * 7, height: 6 })
-                 : T(st.word ?? '', { dimColor: !!st.dim, ...(st.color ? { color: st.color } : {}) }),
-        ] }),
-        Box({ width: 7, flexShrink: 0, children: [T(st.bar ? (st.steps ?? st.word ?? '') : '', { ...(st.steps ? { dimColor: true } : st.color ? { color: st.color, bold: true } : {}) })] }),
-        Box({ width: 7, flexShrink: 0, justifyContent: 'flex-end', children: [T(r.ms === null ? '' : fmtTime(r.ms), { dimColor: r.state === 'done' || quiet })] }),
-      ],
-    })
+  const moving = tasks.some(t => t.s === 'run')
+  return Box({
+    flexDirection: 'column',
+    children: [
+      air(8),
+      header,
+      air(6),
+      Box({ flexShrink: 0, children: [Svg({ source: card.svg, alt: `${accepted} accepted; ${tasks.map(t => `${t.title}, ${t.agent}, ${t.s === 'run' && t.total ? `${t.done} of ${t.total}` : t.s}`).join('; ')}${more ? `; +${more.n} more` : ''}`, width: cw, height: card.h, ...(moving ? { isInteractive: true } : {}) })] }),
+    ],
   })
-  return Box({ flexDirection: 'column', children: [header, ...lanes] })
+}
+
+/**
+ * 0.6.0: savvy-progress's Agents panel, black and white. Its three totals as
+ * plain tiles, then running agents, the finished ones (folding), and planned
+ * tasks, each a plain card with an ink progress bar. Null: nothing to draw.
+ */
+export const paneTree = (
+  ui: Els & { Button: (p: Record<string, unknown>) => unknown },
+  list: SpRun[],
+  flow: SpFlow | null,
+  at: number,
+  t: Tone,
+  W: number,
+  isDoneOpen: boolean,
+  onToggle: () => void,
+): unknown => {
+  const { Box, Text, Svg, Button } = ui
+  const running = list.filter(a => a.status === 'running').reverse()
+  const finished = list.filter(a => a.status !== 'running').reverse()
+  // 0.7.2: after a restart the plan comes back without its runs; the panel stays black and white and shows the plan.
+  const rows = flow ? deriveRows(flow, list, {}, at) : []
+  const planned = flow && !flow.isFinished ? rows.filter(r => r.state === 'next' || r.state === 'waiting') : []
+  const acceptedOnly = list.length ? [] : rows.filter(r => r.state === 'done')
+  const cost = list.reduce((s, a) => s + (a.costUsd ?? 0), 0)
+  const tokens = list.reduce((s, a) => s + (a.tokens ?? 0), 0)
+  const start = list.length ? Math.min(...list.map(a => a.startedAt)) : at
+  const end = list.length ? Math.max(...list.map(a => a.endedAt ?? Math.max(at, a.startedAt))) : at
+  const title = flow && !flow.isFinished ? flow.title : ''
+  const card = (a: SpRun) => {
+    const time = fmtTime((a.endedAt ?? Math.max(at, a.startedAt)) - a.startedAt)
+    return Svg({
+      source: agentCard(W, t, { ...a, model: a.model ?? '', time }),
+      alt: `${a.description}: ${a.type}, ${a.status}${a.stepTotal ? `, step ${a.stepDone ?? 0} of ${a.stepTotal}` : ''}, ${time}`,
+      width: W,
+      height: AGENT_H,
+    })
+  }
+  const head = Svg({ source: paneHeader(W, t, title, `≈${fmtCost(cost)}`, fmtTokens(tokens), fmtTime(end - start)), alt: `${title ? title + ': ' : ''}≈${fmtCost(cost)}, ${fmtTokens(tokens)} tokens, ${fmtTime(end - start)}`, width: W, height: (title ? 30 : 0) + 58 })
+  return Box({
+    flexDirection: 'column', gap: 1,
+    children: [
+      head,
+      ...(running.length ? [Text({ dimColor: true, children: [`Running · ${running.length}`] }), ...running.map(card)] : []),
+      ...(finished.length ? [Button({ key: DONE_KEY, label: `${isDoneOpen ? '▾' : '▸'} Finished · ${finished.length}`, plain: true, onPress: onToggle }), ...(isDoneOpen ? finished.map(card) : [])] : []),
+      ...(!list.length ? [Text({ dimColor: true, children: [flow ? 'No agent has run in this session yet; the plan is below.' : 'No agents yet.'] })] : []),
+      ...(acceptedOnly.length ? [Button({ key: DONE_KEY, label: `${isDoneOpen ? '▾' : '▸'} Accepted · ${acceptedOnly.length}`, plain: true, onPress: onToggle }), ...(isDoneOpen ? acceptedOnly.map(r => Svg({ source: acceptedCard(W, t, r.n, r.title), alt: `${r.n}. ${r.title}: accepted`, width: W, height: PLANNED_H })) : [])] : []),
+      ...(planned.length ? [Text({ dimColor: true, children: [`Planned · ${planned.length}`] }), ...planned.map(r => Svg({ source: plannedCard(W, t, r.n, r.title, r.waitsOn.length ? `after ${r.waitsOn.join(', ')}` : r.agent), alt: `${r.n}. ${r.title}: planned`, width: W, height: PLANNED_H }))] : []),
+    ],
+  })
+}
+
+// The person's light or dark theme, read once a load; the band and panel cards follow it.
+let lightTheme: boolean | null = null
+const isLightTheme = async ($: EngineInterface): Promise<boolean> => {
+  if (lightTheme === null) {
+    try {
+      const theme = (await $.config.list()).find(row => row.key === 'theme')?.value
+      lightTheme = typeof theme === 'string' && theme.startsWith('light')
+    } catch {
+      lightTheme = false
+    }
+  }
+  return lightTheme
 }
 
 // ---------------------------------------------------------------------------
@@ -841,12 +829,14 @@ const check = async ($: EngineInterface, isBandOn: boolean): Promise<string> => 
 }
 
 export const register: Register = (on, options) => {
-  const opt = options as { leadRule?: boolean; workerRule?: boolean; autoTrack?: boolean; noStepAgents?: string; checklistBand?: boolean; teams?: string }
+  const opt = options as { leadRule?: boolean; workerRule?: boolean; autoTrack?: boolean; noStepAgents?: string; checklistBand?: boolean; teams?: string; colourCards?: boolean }
   const teams = parseTeams(opt.teams)
   const leadRule = opt.leadRule !== false
   const workerRule = opt.workerRule !== false
   const autoTrack = opt.autoTrack !== false
   const isBandOn = opt.checklistBand !== false
+  // 0.6.0: Lane cards in the band, and the black-and-white Agents panel; off = 0.5 Lanes and savvy-progress's own panel.
+  const colourCards = opt.colourCards !== false
   // An empty pattern names no agent (new RegExp('') would match every one).
   let noStep: RegExp | null = null
   try {
@@ -1098,8 +1088,10 @@ export const register: Register = (on, options) => {
     if (shape) return leave('savvy-progress', `savvy-progress's state does not match 1.2.1 (${shape})`)
     if (!isOutside) return leave('savvy-progress', 'savvy-progress is not beneath savvy-teams in the hook chain')
     if (!spRan) return leave('savvy-progress', 'savvy-progress did not draw its band beneath savvy-teams')
-    const split = splitSpBand(drawn)
-    if (!split.ok) return leave('savvy-progress', split.reason)
+    const direct = splitSpBand(drawn)
+    const found = direct.ok ? { split: direct, path: [] as number[] } : findSpBand(drawn)
+    if (!found) return leave('savvy-progress', direct.ok ? 'savvy-progress\'s band was not found' : direct.reason)
+    const split = found.split
 
     try {
       const flow = flowValue as unknown as SpFlow
@@ -1145,21 +1137,53 @@ export const register: Register = (on, options) => {
       // 0.5.3 (review F9): the agents panel, reachable from the band again (savvy-progress's ×N button).
       const agents = Button({ key: AGENTS_KEY, label: 'Agents', plain: true, onPress: () => void openAgents($) })
       const Svg = (ui as unknown as { Svg?: (p: { source: string; alt: string; width?: number; height?: number }) => unknown }).Svg
+      const drawOpts = {
+        maxLines: Math.min(6, (e.props.maxRows || 8) - 1),
+        elapsedMs: Math.max(0, jobEnd - jobStart),
+        unplanned: unplannedRunning(flow, runs, clocks),
+        cols,
+        bodyCols: e.props.bodyColumns || 100,
+      }
+      // The plain text band: the terminal, or graphical surfaces with colourCards off.
+      const textBand = () => Box({
+        flexDirection: 'column',
+        children: [Box({ flexDirection: 'row', gap: 1, children: [Box({ flexGrow: 1, children: [text(band.header)] }), agents, close] }), ...band.lines.map(text)],
+      })
       const ours = e.surface !== 'terminal' && Svg
-        ? lanesTree({ Box, Text, Svg }, flow, rows, {
-            maxLines: Math.min(6, (e.props.maxRows || 8) - 1),
-            elapsedMs: Math.max(0, jobEnd - jobStart),
-            unplanned: unplannedRunning(flow, runs, clocks),
-            cols,
-          }, [agents, close])
-        : Box({
-            flexDirection: 'column',
-            children: [Box({ flexDirection: 'row', gap: 1, children: [Box({ flexGrow: 1, children: [text(band.header)] }), agents, close] }), ...band.lines.map(text)],
-          })
+        ? colourCards
+          ? routeATree({ Box, Text, Svg }, flow, rows, drawOpts,
+              Button({ key: AGENTS_KEY, label: 'Agents', variant: 'secondary', onPress: () => void openAgents($) }),
+              Button({ key: CLOSE_KEY, label: '✕', variant: 'secondary', onPress: () => void closeBar($) }),
+              await isLightTheme($))
+          : textBand()
+        : textBand()
       seen = { at, band: 'checklist', reason: 'all checks passed', beneath, isOutside }
-      return split.below ? Box({ flexDirection: 'column', children: [ours, split.below as never] }) : ours
+      // savvy-progress keeps other mods' bands under its bar; one that belongs on top goes above the checklist.
+      const parts = split.below ? (hasTopBand(split.below) ? [split.below, ours] : [ours, split.below]) : [ours]
+      const whole = parts.length > 1 ? Box({ flexDirection: 'column', children: parts as never[] }) : ours
+      return replaceAt(drawn, found.path, whole) as typeof drawn
     } catch (err) {
       return leave('savvy-progress', `the checklist failed to draw (${err instanceof Error ? err.message : String(err)})`)
+    }
+  })
+
+  // 0.6.0: savvy-progress's Agents panel, redrawn black and white: plain cards, ink
+  // progress bars, coral only for a failure. Anything unexpected: its own panel stays.
+  on('ui.render', { component: 'Pane', requestId: SP_PANE }, async ($, e, next) => {
+    const drawn = await next(e)
+    if (!colourCards || e.surface === 'terminal') return drawn
+    try {
+      const ui = $.ui.resolve(e) as unknown as Els & { Button: (p: Record<string, unknown>) => unknown }
+      if (!ui.Svg) return drawn
+      const list = ((await $.state.get(AGENTS))?.value ?? []) as unknown as SpRun[]
+      const flowValue = ((await $.state.get(FLOW))?.value ?? null) as unknown as SpFlow | null
+      const at = Math.max(Number((await $.state.get(SP_NOW))?.value ?? 0), await $.clock.now(), ...list.map(a => a.startedAt))
+      const isOpen = ((await $.state.get(PANE_DONE))?.value ?? true) !== false
+      const tree = paneTree(ui, list, flowValue, at, toneOf(await isLightTheme($)), Math.max(240, Math.min(900, (e.props.bodyColumns || 40) * 8 - 8)), isOpen,
+        () => void $.state.set(PANE_DONE, !isOpen).catch(() => undefined))
+      return tree ?? drawn
+    } catch {
+      return drawn
     }
   })
 }

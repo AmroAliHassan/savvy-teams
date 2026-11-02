@@ -79,6 +79,12 @@ export type SpRun = {
   stepDone?: number
   stepTotal?: number
   stepNote?: string
+  /** 0.6.0, for the Agents panel: savvy-progress 1.2.1 fields this plugin reads. */
+  effort?: string
+  contextTokens?: number
+  contextMax?: number
+  tokens?: number
+  costUsd?: number
 }
 
 declare module 'claude-code' {
@@ -91,6 +97,8 @@ declare module 'claude-code' {
       /** Once a second while a live bar shows the checklist and no agent runs, so the job clock moves. */
       tick: number
       clock: StateFamily<RunClock>
+      /** Whether the finished list is open in this plugin's drawing of the Agents panel. */
+      paneDone: boolean
     }
   }
 }

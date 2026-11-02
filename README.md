@@ -1,17 +1,23 @@
 # savvy-teams
 
-A companion to [savvy-progress](https://github.com/johnnyvizz/claude-kit) for Claude Code. It turns the progress bar above the prompt into **Lanes**: a header for the job, then one lane for each task.
+A companion to [savvy-progress](https://github.com/johnnyvizz/claude-kit) for Claude Code. It redraws the progress bar above the prompt as **one calm surface** that looks like part of the app:
 
-- **The header:** the job, a phase pill, the accepted count, the elapsed time and a ✕ to close.
-- **Each lane:** a state icon, the task, the agent, a slim progress bar, the steps and the active time.
-- **Colours:** an ocean palette.
-  - teal: accepted
-  - blue: running
-  - amber: ready for your review
-  - coral: failed or blocked
-  - slate: still to come
-- **On the desktop app:** icons and bars are crisp vector drawings, and the words follow your theme and font.
-- **In the terminal:** the band is drawn in plain, theme-coloured text.
+- **The job header:** one panel with a softly pulsing live dot, the job name, a phase chip (Working, Review, Done), "N of M accepted", a slim meter with one cell per task, and the elapsed time. Beside it sit **Agents** and **✕**, the app's own buttons.
+- **The list card:** one panel. It starts with the accepted tasks folded into a single line, then up to four live tasks on fixed columns: task, agent, a segmented step track, steps or state, and minutes. "+N more" ends the card.
+- **Colour only where something is alive:**
+
+  | Colour | Meaning |
+  |---|---|
+  | blue | running |
+  | amber | ready for your review |
+  | teal | accepted |
+  | coral | failed |
+  | slate | waiting |
+
+- **Quiet motion:** the current step glows on one row at a time.
+- **Light work:** times are shown to the minute, so the drawings change at most once a minute and are reused in between.
+- **The Agents panel** (`/agents-info`) is redrawn in black and white: plain cards, ink progress bars, and coral only for a failed run.
+- **Desktop and terminal:** on the desktop app, every word sits inside the drawings and follows your light or dark theme. In the terminal the band is plain, theme-coloured text.
 
 It also does the following:
 
@@ -55,7 +61,8 @@ Restart Claude Code, then type `/progress-bar check` to see which bar is active 
 
 | Setting | Default | What it does |
 |---|---|---|
-| `checklistBand` | on | Draw Lanes in place of savvy-progress's bar. Off: the stock bar. |
+| `checklistBand` | on | Draw this band in place of savvy-progress's bar. Off: the stock bar. |
+| `colourCards` | on | The one-surface band and the black-and-white Agents panel. Off: the plain text band and savvy-progress's own panel. |
 | `leadRule` | on | Add the planning rule to the main session's system prompt. |
 | `workerRule` | on | Tell subagents to report their steps. |
 | `autoTrack` | on | Put subagent runs on the bar when the lead has not planned. |
