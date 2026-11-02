@@ -42,13 +42,15 @@ First install savvy-progress, which this mod builds on. At the prompt of a termi
 Then install savvy-teams. At the prompt of a terminal session:
 
 ```
-/plugin install savvy-teams --marketplace AmroAliHassan/savvy-teams
+/plugin marketplace add AmroAliHassan/savvy-teams
+/plugin install savvy-teams@savvy-teams
 ```
 
 From a shell:
 
 ```
-claude plugin install savvy-teams --marketplace AmroAliHassan/savvy-teams
+claude plugin marketplace add AmroAliHassan/savvy-teams
+claude plugin install savvy-teams@savvy-teams
 ```
 
 In the desktop app, where `/plugin` does not run:
