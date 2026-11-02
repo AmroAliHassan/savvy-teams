@@ -361,7 +361,7 @@ test('Route A: a header drawing with Agents and ✕ beside it, one list card, no
   const tree = routeATree(els, job(), deriveRows(job(), runs, {}, AT), { maxLines: 6, elapsedMs: 7_080_000, unplanned: 0, cols: 110, bodyCols: 117 }, btn('a'), btn('x'), false)
   const nodes = walk(tree)
   expect(nodes.filter(x => x.type === 'Text')).toHaveLength(0)
-  const svgs = nodes.filter(x => x.type === 'Svg' && x.props.alt !== 'space')
+  const svgs = nodes.filter(x => x.type === 'Svg' && !['space', 'bar', 'bar end'].includes(String(x.props.alt)))
   expect(svgs).toHaveLength(2)
   const [head, card] = svgs.map(x => String(x.props.source))
   expect(head).toContain('Sales book v2')
@@ -375,13 +375,19 @@ test('Route A: a header drawing with Agents and ✕ beside it, one list card, no
   // The current-step relay runs on a 6 s loop, so a once-a-minute redraw never shows.
   expect(card).toContain('dur="6s"')
   expect(nodes.filter(x => x.type === 'Button').map(x => x.props.variant)).toEqual(['secondary', 'secondary'])
+  // 0.9.0 full line: no app border, a stretched fill per bar, the buttons on the bar's own colour, a drawn rounded end.
+  expect(nodes.some(x => x.type === 'Box' && x.props.borderStyle)).toBe(false)
+  expect(nodes.filter(x => x.type === 'Svg' && x.props.alt === 'bar' && x.props.width === undefined)).toHaveLength(2)
+  expect(nodes.filter(x => x.type === 'Svg' && x.props.alt === 'bar end')).toHaveLength(2)
+  expect(nodes.some(x => x.type === 'Box' && x.props.backgroundColor && x.children.some(c => (c as { type?: string }).type === 'Button'))).toBe(true)
+  expect(head).toContain('<path d="M8,0')
 })
 
 test('Route A: a job with every task accepted reads Done, with no live rows', async () => {
   const fin = { ...job({ done: 5 }) }
   const doneRuns = runs.map(a => ({ ...a, status: 'done' as const, endedAt: a.endedAt ?? AT }))
   const tree = routeATree(els, fin, deriveRows(fin, doneRuns, {}, AT), { maxLines: 6, elapsedMs: 0, unplanned: 0, cols: 110, bodyCols: 117 }, null, null, true)
-  const svgs = walk(tree).filter(x => x.type === 'Svg' && x.props.alt !== 'space').map(x => String(x.props.source))
+  const svgs = walk(tree).filter(x => x.type === 'Svg' && !['space', 'bar', 'bar end'].includes(String(x.props.alt))).map(x => String(x.props.source))
   expect(svgs[0]).toContain('Done')
   expect(svgs[0]).toContain('5 of 5 accepted')
   expect(svgs[1]).toContain('5 accepted')

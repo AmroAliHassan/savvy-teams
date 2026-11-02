@@ -2,7 +2,7 @@ import type { Register, EngineInterface } from 'claude-code'
 import type { AutoFlow, JobClock, RunClock, SavedBar, SavedFlow, SpFlow, SpRun } from '../types'
 import { toneOf, paneHeader, agentCard, plannedCard, acceptedCard, fmtCost, fmtTokens, AGENT_H, PLANNED_H } from './cards'
 import type { Tone } from './cards'
-import { THEME, ROW_H, drawingWidth, headerSvg, cardSvg, cardHeight, fmtMin, remembered } from './routeA'
+import { THEME, ROW_H, BTN, headerSvg, cardSvg, cardHeight, fmtMin, remembered } from './routeA'
 import type { AJob, ATask, AState } from './routeA'
 
 // Companion to savvy-progress. That mod draws the bar only when the lead calls
@@ -522,15 +522,27 @@ export const routeATree = (
   const cells = rows.map(r => toA(r.state)).sort((a, b) => order.indexOf(a) - order.indexOf(b))
   const job: AJob = { title: flow.title, phase, accepted, total: rows.length, elapsed: isDone ? 'done' : fmtMin(o.elapsedMs), cells }
   // Space between rows lives in small empty drawings, so it is exact: 8 px above the header, 6 above the card.
-  const air = (h: number) => Svg({ source: `<svg xmlns="http://www.w3.org/2000/svg" width="${cw}" height="${h}" viewBox="0 0 ${cw} ${h}"></svg>`, alt: 'space', width: cw, height: h })
-  const hw = drawingWidth(cw, ['Agents', '✕'])
-  const header = Box({
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+  const air = (h: number, w = 8) => Svg({ source: `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}"></svg>`, alt: 'space', width: w, height: h })
+  // 0.9.0, full line (measured live 2 Nov 2026): each bar is a drawn start, a fill the app stretches over the
+  // room left, the buttons on the bar's own colour, then a drawn rounded end. No size is guessed for the right edge.
+  const fill = (h: number) => `<svg xmlns="http://www.w3.org/2000/svg" width="4000" height="${h}" viewBox="0 0 4000 ${h}" preserveAspectRatio="none"><rect width="4000" height="${h}" fill="${C.surf}"/></svg>`
+  const cap = (h: number) => Svg({ source: `<svg xmlns="http://www.w3.org/2000/svg" width="8" height="${h}" viewBox="0 0 8 ${h}"><path d="M0,0 A8,8 0 0 1 8,8 V${h - 8} A8,8 0 0 1 0,${h} Z" fill="${C.surf}"/></svg>`, alt: 'bar end', width: 8, height: h })
+  const fullBar = (key: string, h: number, start: unknown, tail: unknown[]) => Box({
+    key, flexDirection: 'row', alignItems: 'stretch',
     children: [
-      Box({ flexShrink: 0, width: Math.ceil(hw / 8), children: [Svg({ source: remembered('header', JSON.stringify([hw, job, isLight]), () => headerSvg(hw, job, C)), alt: `${flow.title}: ${phase}, ${accepted} of ${rows.length} accepted, ${job.elapsed}`, width: hw, height: ROW_H, ...(isDone ? {} : { isInteractive: true }) })] }),
-      Box({ flexDirection: 'row', alignItems: 'center', gap: 1, flexShrink: 0, children: [agentsBtn, closeBtn] }),
+      start,
+      Box({ flexGrow: 1, flexShrink: 1, minWidth: 0, width: 0, backgroundColor: C.surf, children: [Svg({ source: fill(h), alt: 'bar', height: h })] }),
+      ...(tail.length ? [Box({ flexDirection: 'row', alignItems: 'center', gap: 0, backgroundColor: C.surf, children: [...tail, air(h, 1)] })] : []),
+      cap(h),
     ],
   })
+  const btns = [agentsBtn, closeBtn].filter(Boolean)
+  // bodyColumns × 8 ran up to about 25 px wider than the real band (seen live, 2 Nov): drawings leave this to the stretched fill.
+  const SAFE = 32
+  const hw = Math.max(240, Math.floor(cw - (agentsBtn ? BTN.Agents + 6 : 0) - (closeBtn ? BTN['✕'] + 3 : 0) - 8 - SAFE))
+  const header = fullBar('savvy-teams-header', ROW_H,
+    Svg({ source: remembered('header', JSON.stringify([hw, job, isLight]), () => headerSvg(hw, job, C, false)), alt: `${flow.title}: ${phase}, ${accepted} of ${rows.length} accepted, ${job.elapsed}`, width: hw, height: ROW_H, ...(isDone ? {} : { isInteractive: true }) }),
+    btns.length ? [...(agentsBtn ? [agentsBtn] : []), ...(agentsBtn && closeBtn ? [air(2, 6)] : []), ...(closeBtn ? [closeBtn] : []), air(2, 3)] : [])
   const rank = (s: RowState): number => (s === 'failed' || s === 'blocked' ? 0 : s === 'review' ? 1 : s === 'running' ? 2 : 3)
   const live = isDone ? [] : rows.filter(r => r.state !== 'done' && r.state !== 'skipped').sort((a, b) => rank(a.state) - rank(b.state) || a.n - b.n)
   const room = o.maxLines >= 5 ? 4 : 3
@@ -550,8 +562,10 @@ export const routeATree = (
     ? { n: hidden.length, note: `${hidden.every(r => r.state === 'running') ? 'running' : 'waiting'} · ${hidden.map(r => r.title).join(', ')}` }
     : null
   const names = rows.filter(r => r.state === 'done').map(r => r.title)
+  // The card's columns take the band's width; the app stretches its fill over whatever is left.
+  const listW = Math.max(240, Math.floor(cw - 8 - SAFE))
   const card = {
-    svg: remembered('card', JSON.stringify([cw, accepted, names, tasks, more, isLight]), () => cardSvg(cw, accepted, names, tasks, more, C).svg),
+    svg: remembered('card', JSON.stringify([listW, accepted, names, tasks, more, isLight]), () => cardSvg(listW, accepted, names, tasks, more, C, false).svg),
     h: cardHeight(tasks.length, !!more, accepted > 0),
   }
   const moving = tasks.some(t => t.s === 'run')
@@ -560,8 +574,8 @@ export const routeATree = (
     children: [
       air(8),
       header,
-      air(6),
-      Box({ flexShrink: 0, children: [Svg({ source: card.svg, alt: `${accepted} accepted; ${tasks.map(t => `${t.title}, ${t.agent}, ${t.s === 'run' && t.total ? `${t.done} of ${t.total}` : t.s}`).join('; ')}${more ? `; +${more.n} more` : ''}`, width: cw, height: card.h, ...(moving ? { isInteractive: true } : {}) })] }),
+      air(8),
+      fullBar('savvy-teams-card', card.h, Svg({ source: card.svg, alt: `${accepted} accepted; ${tasks.map(t => `${t.title}, ${t.agent}, ${t.s === 'run' && t.total ? `${t.done} of ${t.total}` : t.s}`).join('; ')}${more ? `; +${more.n} more` : ''}`, width: listW, height: card.h, ...(moving ? { isInteractive: true } : {}) }), []),
     ],
   })
 }

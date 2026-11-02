@@ -4,15 +4,16 @@
 // minute, so a drawing changes at most once a minute and its slow motion (the
 // header's breathing dot, the current-step relay on a 6 s loop) never jumps.
 
-export const ROW_H = 35
+export const ROW_H = 34
 const R = 8
 export const GAP = 8
-/** The app's secondary buttons, measured on the live app (Goodnight, Hold for me) or estimated from the same font. */
-export const BTN: Record<string, number> = { Goodnight: 111, 'Hold for me': 118, 'Claude decides': 144, Goodmorning: 137, Cancel: 78, Agents: 80, '✕': 40 }
+/** The app's buttons in CSS px, measured on the live app (which draws at 120 %); only content widths use them. */
+export const BTN: Record<string, number> = { Goodnight: 90, 'Hold for me': 98, 'Claude decides': 120, Goodmorning: 112, Cancel: 64, Agents: 66, '✕': 33 }
 /** Slack so a pixel or two of button-width error lands in a gap, never past the band edge. */
 const SLACK = 4
+/** Full line (as night-shift): up to the row's own buttons, or the whole width when it has none. */
 export const drawingWidth = (cw: number, labels: string[]): number =>
-  Math.max(240, Math.floor(cw - labels.reduce((s, l) => s + (BTN[l] ?? 90) + GAP, 0) - SLACK))
+  labels.length ? Math.max(240, Math.floor(cw - labels.reduce((s, l) => s + (BTN[l] ?? 90) + GAP, 0) - SLACK)) : Math.floor(cw)
 
 const FONT = "'Segoe UI', system-ui, sans-serif"
 const esc = (s: string): string => s.replace(/&/g, '&amp;').replace(/</g, '&lt;')
@@ -83,10 +84,15 @@ const meter = (x: number, y: number, w: number, h: number, cells: AState[], C: T
 }
 
 /** The job header: one panel, a breathing live dot, title, phase chip, "N of M accepted", the meter and the elapsed minutes. */
-export const headerSvg = (w: number, job: AJob, C: Theme): string => {
+/** A fill with rounded left corners: the drawn start of a full-line bar (0.9.0). */
+export const leftEdge = (w: number, h: number, fill: string): string =>
+  `<path d="M${R},0 H${w} V${h} H${R} A${R},${R} 0 0 1 0,${h - R} V${R} A${R},${R} 0 0 1 ${R},0 Z" fill="${fill}"/>`
+
+/** framed: the drawing's own outlined panel; false: the drawn start of a full-line bar. */
+export const headerSvg = (w: number, job: AJob, C: Theme, framed = true): string => {
   const isDone = job.phase === 'Done'
   const dot = isDone ? C.acc : job.phase === 'Review' ? C.rev : C.run
-  let b = `<rect x=".5" y=".5" width="${w - 1}" height="${ROW_H - 1}" rx="${R - 0.5}" fill="${C.surf}" stroke="${C.stroke}"/>`
+  let b = framed ? `<rect x=".5" y=".5" width="${w - 1}" height="${ROW_H - 1}" rx="${R - 0.5}" fill="${C.surf}" stroke="${C.stroke}"/>` : leftEdge(w, ROW_H, C.surf)
   b += `<circle cx="17" cy="17.5" r="4" fill="${dot}"/>`
   if (!isDone) b += `<circle cx="17" cy="17.5" r="4" fill="none" stroke="${dot}" stroke-width="1.5"><animate attributeName="r" values="4;9;9" keyTimes="0;.6;1" dur="2.4s" repeatCount="indefinite"/><animate attributeName="stroke-opacity" values=".7;0;0" keyTimes="0;.6;1" dur="2.4s" repeatCount="indefinite"/></circle>`
   const right = `${job.accepted} of ${job.total} accepted`
@@ -130,10 +136,10 @@ export const cardHeight = (rows: number, hasMore: boolean, hasNames: boolean): n
  * on fixed columns (glyph, task, agent, step track, steps or state word,
  * minutes) and "+N more". Widths follow the band; the columns scale with it.
  */
-export const cardSvg = (w: number, accepted: number, names: string[], tasks: ATask[], more: { n: number; note: string } | null, C: Theme): { svg: string; h: number } => {
+export const cardSvg = (w: number, accepted: number, names: string[], tasks: ATask[], more: { n: number; note: string } | null, C: Theme, framed = true): { svg: string; h: number } => {
   const hasNames = accepted > 0
   const h = cardHeight(tasks.length, !!more, hasNames)
-  let b = `<rect x=".5" y=".5" width="${w - 1}" height="${h - 1}" rx="${R - 0.5}" fill="${C.surf}" stroke="${C.stroke}"/>`
+  let b = framed ? `<rect x=".5" y=".5" width="${w - 1}" height="${h - 1}" rx="${R - 0.5}" fill="${C.surf}" stroke="${C.stroke}"/>` : leftEdge(w, h, C.surf)
   let y0 = 4
   if (hasNames) {
     const y = y0 + 11
@@ -154,7 +160,9 @@ export const cardSvg = (w: number, accepted: number, names: string[], tasks: ATa
     if (tasks.length) b += `<line x1="12" x2="${w - 12}" y1="${y0 + 0.5}" y2="${y0 + 0.5}" stroke="${C.stroke}"/>`
     y0 += 1
   }
-  const X = { glyph: 17, title: 32, agent: Math.round(w * 0.351), track: Math.round(w * 0.543), trackW: Math.round(w * 0.266), steps: Math.round(w * 0.828), time: w - 14 }
+  // The state column is fixed (room for "ready for review" and the minutes); the other columns share the rest.
+  const steps = w - 14 - 150
+  const X = { glyph: 17, title: 32, agent: Math.round(steps * 0.42), track: Math.round(steps * 0.655), trackW: Math.round(steps * 0.325), steps, time: w - 14 }
   tasks.forEach((t, i) => {
     const cy = y0 + 24 * i + 12
     const by = cy + 4.8
