@@ -184,6 +184,32 @@ const isSp = (name: unknown): boolean => isStr(name) && /^savvy-progress(@|$)/.t
 
 // 0.5.5: bands that belong above the checklist (night-shift's day/night strip), by their Box key.
 const TOP_KEYS = new Set(['night-shift-strip'])
+/** Drops cache-tax's own row (a Box holding a Text that starts " cache-tax · "), never the column that wraps the rest of the band. */
+export const dropCacheTaxRow = (n: unknown, depth = 0): unknown => {
+  if (depth > 8 || !n || typeof n !== 'object') return n
+  const d = n as { type?: unknown; children?: unknown[] }
+  if (!Array.isArray(d.children)) return n
+  // Exactly cache-tax's row: a Box holding a Text whose first words are " cache-tax · " (never the column that wraps the rest of the band).
+  const isRow = (x: unknown): boolean => {
+    const b = x as typeof d
+    return !!b && typeof b === 'object' && b.type === 'Box' && Array.isArray(b.children) &&
+      b.children.some(t => !!t && typeof t === 'object' && (t as typeof d).type === 'Text' && typeof (t as typeof d).children?.[0] === 'string' && String((t as typeof d).children![0]).includes('cache-tax · '))
+  }
+  // The band is handed back untouched (the same objects) unless the row is really there: only the path to it is rebuilt.
+  let changed = false
+  const kids: unknown[] = []
+  for (const c of d.children) {
+    if (isRow(c)) {
+      changed = true
+      continue
+    }
+    const next = dropCacheTaxRow(c, depth + 1)
+    if (next !== c) changed = true
+    kids.push(next)
+  }
+  return changed ? { ...d, children: kids } : n
+}
+
 export const hasTopBand = (n: unknown, depth = 0): boolean => {
   if (depth > 4 || !n || typeof n !== 'object') return false
   const d = n as Dict
@@ -1083,7 +1109,8 @@ export const register: Register = (on, options) => {
   // (3) its answer is the 1.2.1 band with its own row found. Anything else:
   // savvy-progress's answer goes through untouched. Never two bars, never none.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const drawn = await next(e)
+    // night-shift 0.6.0 shows the cache in its usage bar, so cache-tax's own grey row is folded away wherever it sits.
+    const drawn = dropCacheTaxRow(await next(e))
     const at = await $.clock.now()
     const beneath = [...new Set(next.trace.map(t => String(t.plugin)).filter(p => p !== 'engine'))]
     const spRan = next.trace.some(t => isSp(t.plugin) && (t.outcome === 'returned' || t.outcome === 'passed'))

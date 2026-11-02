@@ -1,6 +1,6 @@
 {
   "name": "savvy-teams",
-  "version": "0.9.1",
+  "version": "0.9.3",
   "description": "Companion to savvy-progress: the task band above the prompt redrawn as one calm surface. A job header with Agents and ✕ inside its bar, and one list card of live tasks (state, agent, step track, steps, minutes), each a full-line bar the desktop app stretches to the band's edge; theme-coloured text in the terminal. Drawn only when a run-time guard confirms it can replace savvy-progress's row. Plus the lead and step rules (skipped for agents that carry their own or cannot call the step tool), a saved per-session bar that survives /resume, and auto-tracking when the lead forgets.",
   "author": {
     "name": "MENT design"
